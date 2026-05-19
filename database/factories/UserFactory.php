@@ -2,44 +2,70 @@
 
 namespace Database\Factories;
 
-use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 
-/**
- * @extends Factory<User>
- */
 class UserFactory extends Factory
 {
-    /**
-     * The current password being used by the factory.
-     */
-    protected static ?string $password;
-
-    /**
-     * Define the model's default state.
-     *
-     * @return array<string, mixed>
-     */
     public function definition(): array
     {
         return [
-            'name' => fake()->name(),
-            'email' => fake()->unique()->safeEmail(),
-            'email_verified_at' => now(),
-            'password' => static::$password ??= Hash::make('password'),
-            'remember_token' => Str::random(10),
+            'name'                   => fake()->name(),
+            'email'                  => fake()->unique()->safeEmail(),
+            'phone'                  => '05' . fake()->unique()->numerify('#########'),
+            'phone_verified_at'      => null,
+            'password'               => Hash::make('password'),
+            'status'                 => 'pending',
+            'agent_type'             => null,
+            'admin_note'             => null,
+            'company_name'           => null,
+            'subscription_plan'      => 'free',
+            'subscription_started_at'=> null,
+            'subscription_ends_at'   => null,
+            'offer_limit'            => 0,
+            'is_banned'              => false,
+            'ban_reason'             => null,
+            'remember_token'         => Str::random(10),
         ];
     }
 
-    /**
-     * Indicate that the model's email address should be unverified.
-     */
+    // ── State'ler ─────────────────────────────────────────────
+
+    public function active(): static
+    {
+        return $this->state(fn () => [
+            'status'            => 'active',
+            'phone_verified_at' => now(),
+        ]);
+    }
+
+    public function buyer(): static
+    {
+        return $this->active()->afterCreating(fn ($user) => $user->assignRole('buyer'));
+    }
+
+    public function agent(string $agentType = 'emlakci'): static
+    {
+        return $this->active()->state(fn () => [
+            'agent_type'   => $agentType,
+            'company_name' => fake()->company(),
+            'offer_limit'  => 10,
+        ])->afterCreating(fn ($user) => $user->assignRole('agent'));
+    }
+
+    public function banned(): static
+    {
+        return $this->state(fn () => [
+            'is_banned'  => true,
+            'ban_reason' => 'Kural ihlali',
+        ]);
+    }
+
     public function unverified(): static
     {
-        return $this->state(fn (array $attributes) => [
-            'email_verified_at' => null,
+        return $this->state(fn () => [
+            'phone_verified_at' => null,
         ]);
     }
 }

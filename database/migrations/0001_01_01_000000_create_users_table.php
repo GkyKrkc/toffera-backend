@@ -6,17 +6,40 @@ use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
-    /**
-     * Run the migrations.
-     */
     public function up(): void
     {
         Schema::create('users', function (Blueprint $table) {
             $table->id();
             $table->string('name');
-            $table->string('email')->unique();
-            $table->timestamp('email_verified_at')->nullable();
-            $table->string('password');
+            $table->string('email')->unique()->nullable();
+            $table->string('phone')->unique()->index();
+            $table->timestamp('phone_verified_at')->nullable();
+            $table->string('password')->nullable(); // SMS girişi için opsiyonel
+
+            $table->string('company_name')->nullable(); // Uzman hesapları için
+
+            // ── Kayıt & onay durumu ──────────────────────────────────
+            // pending  : Yeni kayıt (müşteri OTP bekliyor, uzman belge/admin bekliyor)
+            // active   : Aktif kullanıcı (müşteri OTP sonrası, uzman admin onayı sonrası)
+            // rejected : Admin uzman başvurusunu reddetti
+            $table->enum('status', ['pending', 'active', 'rejected'])->default('pending');
+
+            // Sadece agent rolündeki kullanıcılarda dolu
+            $table->enum('agent_type', ['emlakci', 'galerici', 'her_ikisi'])->nullable();
+
+            // Admin ret sebebi veya başvuru notu
+            $table->text('admin_note')->nullable();
+
+            // ── Üyelik & abonelik ────────────────────────────────────
+            $table->string('subscription_plan')->default('free'); // free | basic | premium | pro
+            $table->timestamp('subscription_started_at')->nullable();
+            $table->timestamp('subscription_ends_at')->nullable();
+            $table->integer('offer_limit')->default(0); // agent'ın yapabileceği aylık teklif
+
+            // ── Hesap kısıtlama ──────────────────────────────────────
+            $table->boolean('is_banned')->default(false);
+            $table->text('ban_reason')->nullable();
+
             $table->rememberToken();
             $table->timestamps();
         });
@@ -37,13 +60,10 @@ return new class extends Migration
         });
     }
 
-    /**
-     * Reverse the migrations.
-     */
     public function down(): void
     {
-        Schema::dropIfExists('users');
-        Schema::dropIfExists('password_reset_tokens');
         Schema::dropIfExists('sessions');
+        Schema::dropIfExists('password_reset_tokens');
+        Schema::dropIfExists('users');
     }
 };
