@@ -11,23 +11,23 @@ class UserFactory extends Factory
     public function definition(): array
     {
         return [
-            'name'                   => fake()->name(),
-            'email'                  => fake()->unique()->safeEmail(),
-            'phone'                  => '05' . fake()->unique()->numerify('#########'),
-            'phone_verified_at'      => null,
-            'password'               => Hash::make('password'),
-            'status'                 => 'pending',
-            'agent_type'             => null,
-            'admin_note'             => null,
-            'company_name'           => null,
-            'subscription_plan'      => 'free',
-            'subscription_started_at'=> null,
-            'subscription_ends_at'   => null,
-            'offer_limit'            => 0,
-            'is_banned'              => false,
-            'ban_reason'             => null,
-            'remember_token'         => Str::random(10),
-        ];
+        'name'                    => $this->faker->name(),
+        'email'                   => $this->faker->unique()->safeEmail(),
+        'phone'                   => '05' . $this->faker->unique()->numerify('#########'),
+        'phone_verified_at'       => null,
+        'password'                => Hash::make('password'),
+        'status'                  => 'pending',
+        'agent_type'              => null,
+        'admin_note'              => null,
+        'company_name'            => null,
+        'subscription_plan'       => 'free',
+        'subscription_started_at' => null,
+        'subscription_ends_at'    => null,
+        'offer_limit'             => 0,
+        'is_banned'               => false,
+        'ban_reason'              => null,
+        'remember_token'          => Str::random(10),
+    ];
     }
 
     // ── State'ler ─────────────────────────────────────────────
@@ -49,7 +49,7 @@ class UserFactory extends Factory
     {
         return $this->active()->state(fn () => [
             'agent_type'   => $agentType,
-            'company_name' => fake()->company(),
+            'company_name' => $this->faker->company(),
             'offer_limit'  => 10,
         ])->afterCreating(fn ($user) => $user->assignRole('agent'));
     }
