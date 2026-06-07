@@ -13,7 +13,6 @@ class User extends Authenticatable
 {
     use HasApiTokens, HasFactory, Notifiable, HasRoles;
 
-    // ── Toplu atama ──────────────────────────────────────────
     protected $fillable = [
         'name',
         'email',
@@ -30,27 +29,54 @@ class User extends Authenticatable
         'offer_limit',
         'is_banned',
         'ban_reason',
+        // Adres alanları
+        'city',
+        'district',
+        'neighborhood',
+        'full_address',
     ];
 
     protected $hidden = [
         'password',
         'remember_token',
     ];
+
     protected $guard_name = 'web';
 
     protected function casts(): array
     {
         return [
-            'phone_verified_at'      => 'datetime',
-            'subscription_started_at'=> 'datetime',
-            'subscription_ends_at'   => 'datetime',
-            'is_banned'              => 'boolean',
-            'offer_limit'            => 'integer',
-            'password'               => 'hashed',
+            'phone_verified_at'       => 'datetime',
+            'subscription_started_at' => 'datetime',
+            'subscription_ends_at'    => 'datetime',
+            'is_banned'               => 'boolean',
+            'offer_limit'             => 'integer',
+            'password'                => 'hashed',
         ];
     }
 
     // ── İlişkiler ─────────────────────────────────────────────
+
+    public function addresses(): HasMany
+    {
+        return $this->hasMany(UserAddress::class)->orderByDesc('is_default');
+    }
+
+    public function defaultAddress(): \Illuminate\Database\Eloquent\Relations\HasOne
+    {
+        return $this->hasOne(UserAddress::class)->where('is_default', true);
+    }
+
+    public function demands(): HasMany
+    {
+        return $this->hasMany(Demand::class);
+    }
+
+    public function offers(): HasMany
+    {
+        return $this->hasMany(Offer::class);
+    }
+
     public function agentDocuments(): HasMany
     {
         return $this->hasMany(AgentDocument::class);
@@ -64,6 +90,27 @@ class User extends Authenticatable
     public function emailVerifications(): HasMany
     {
         return $this->hasMany(EmailVerification::class);
+    }
+
+    // ── Adres yardımcıları ────────────────────────────────────
+
+    /**
+     * Kullanıcının tam adres stringi
+     * Örn: "Dulkadiroğlu, Kahramanmaraş"
+     */
+    public function getFullLocationAttribute(): ?string
+    {
+        $parts = array_filter([
+            $this->neighborhood,
+            $this->district,
+            $this->city,
+        ]);
+        return count($parts) ? implode(', ', $parts) : null;
+    }
+
+    public function hasAddress(): bool
+    {
+        return !empty($this->city) && !empty($this->district);
     }
 
     // ── Durum yardımcıları ────────────────────────────────────
@@ -94,37 +141,19 @@ class User extends Authenticatable
     }
 
     // ── Rol yardımcıları ─────────────────────────────────────
-    // Spatie'nin hasRole() var ama kısa alias'lar okunabilirliği artırır
 
-    public function isAdmin(): bool
-    {
-        return $this->hasRole('admin');
-    }
-
-    public function isBuyer(): bool
-    {
-        return $this->hasRole('buyer');
-    }
-
-    public function isAgent(): bool
-    {
-        return $this->hasRole('agent');
-    }
+    public function isAdmin(): bool  { return $this->hasRole('admin'); }
+    public function isBuyer(): bool  { return $this->hasRole('buyer'); }
+    public function isAgent(): bool  { return $this->hasRole('agent'); }
 
     // ── Abonelik yardımcıları ─────────────────────────────────
 
     public function hasActiveSubscription(): bool
     {
         if ($this->subscription_plan === 'free') return false;
-
         return $this->subscription_ends_at?->isFuture() ?? false;
     }
 
-    /**
-     * Agent'ın teklif yapıp yapamayacağını kontrol eder.
-     * offer_limit = 0 → sınırsız (örn. premium plan)
-     * offer_limit > 0 → bu ay yapılan teklif sayısı kontrol edilir
-     */
     public function canMakeOffer(): bool
     {
         if (!$this->isAgent()) return false;
@@ -175,5 +204,10 @@ class User extends Authenticatable
     public function scopeBuyers($query)
     {
         return $query->whereHas('roles', fn($q) => $q->where('name', 'buyer'));
+    }
+
+    public function regions(): HasMany
+    {
+        return $this->hasMany(AgentRegion::class);
     }
 }

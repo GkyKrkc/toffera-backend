@@ -7,6 +7,11 @@ use App\Http\Controllers\Api\OfferController;
 use App\Http\Controllers\Api\PasswordResetController;
 use App\Http\Controllers\Api\RegisterController;
 use App\Http\Controllers\Api\SubscriptionController;
+use App\Http\Controllers\Api\UserAddressController;
+use App\Http\Controllers\Api\UserProfileController;
+use App\Http\Controllers\Api\AgentRegionController;
+use App\Http\Controllers\Api\DemandStatsController;
+use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\Route;
 
 // ─────────────────────────────────────────────────────────────
@@ -40,9 +45,14 @@ Route::middleware('throttle:login')->group(function () {
 // ─────────────────────────────────────────────────────────────
 Route::middleware('throttle:api')->group(function () {
     Route::get('/subscription/plans', [SubscriptionController::class, 'plans']);
-    Route::get('/categories',         [DemandController::class,        'categories']);
-    Route::get('/demands',            [DemandController::class,        'index']);
-    Route::get('/demands/{demand}',   [DemandController::class,        'show']);
+    Route::get('/categories',         [DemandController::class,       'categories']);
+    Route::get('/demands/stats/summary', [DemandStatsController::class, 'summary']);
+    Route::get('/demands/stats/cities',  [DemandStatsController::class, 'cities']);
+    Route::get('/demands',            [DemandController::class,       'index']);
+    Route::get('/demands/{demand}',   [DemandController::class,       'show']);
+    Route::get('/car-brands',         [\App\Http\Controllers\Api\CarController::class, 'brands']);
+    Route::get('/car-models',         [\App\Http\Controllers\Api\CarController::class, 'models']);
+    Route::get('/car-versions',       [\App\Http\Controllers\Api\CarController::class, 'versions']);
 });
 
 // ─────────────────────────────────────────────────────────────
@@ -55,6 +65,20 @@ Route::middleware(['auth:sanctum', 'auth.token', 'user.status', 'throttle:api'])
     Route::post('/logout/all', [AuthController::class, 'logoutAll']);
     Route::get('/me',          [AuthController::class, 'me']);
 
+    // Profil & Şifre
+    Route::get('/user/profile', [UserProfileController::class, 'show']);
+    Route::put('/user/profile', [UserProfileController::class, 'update']);
+    Route::put('/user/password', [UserProfileController::class, 'updatePassword']);
+
+    // Adres Yönetimi
+    Route::prefix('user/addresses')->group(function () {
+        Route::get('/',                        [UserAddressController::class, 'index']);
+        Route::post('/',                       [UserAddressController::class, 'store']);
+        Route::put('/{address}',               [UserAddressController::class, 'update']);
+        Route::delete('/{address}',            [UserAddressController::class, 'destroy']);
+        Route::patch('/{address}/set-default', [UserAddressController::class, 'setDefault']);
+    });
+
     // Abonelik
     Route::get('/subscription',           [SubscriptionController::class, 'show']);
     Route::post('/subscription/activate', [SubscriptionController::class, 'activate'])
@@ -66,23 +90,29 @@ Route::middleware(['auth:sanctum', 'auth.token', 'user.status', 'throttle:api'])
 
         // ── MÜŞTERİ ─────────────────────────────────────────
         Route::middleware('role:buyer')->prefix('buyer')->group(function () {
-            // Talep yönetimi
-            Route::get('/demands',                        [DemandController::class, 'myDemands']);
-            Route::post('/demands',                       [DemandController::class, 'store']);
-            Route::post('/demands/{demand}/cancel',       [DemandController::class, 'cancel']);
+            Route::get('/demands',                  [DemandController::class, 'myDemands']);
+            Route::post('/demands',                 [DemandController::class, 'store']);
+            Route::post('/demands/{demand}/cancel', [DemandController::class, 'cancel']);
 
-            // Teklif yönetimi (müşteri tarafı)
-            Route::get('/demands/{demand}/offers',        [OfferController::class, 'demandOffers']);
-            Route::post('/offers/{offer}/accept',         [OfferController::class, 'accept']);
-            Route::post('/offers/{offer}/reject',         [OfferController::class, 'reject']);
+            Route::get('/demands/{demand}/offers',  [OfferController::class, 'demandOffers']);
+            Route::post('/offers/{offer}/accept',   [OfferController::class, 'accept']);
+            Route::post('/offers/{offer}/reject',   [OfferController::class, 'reject']);
         });
 
         // ── UZMAN ────────────────────────────────────────────
         Route::middleware('agent.approved')->prefix('agent')->group(function () {
-            // Teklif verme
-            Route::post('/demands/{demand}/offers',       [OfferController::class, 'store'])
+            Route::post('/demands/{demand}/offers', [OfferController::class, 'store'])
                 ->middleware('offer.limit');
-            Route::get('/offers',                         [OfferController::class, 'myOffers']);
+            Route::get('/offers',                   [OfferController::class, 'myOffers']);
+            Route::post('/offers/{offer}/cancel',   [OfferController::class, 'cancel']);
+
+            // Bölge Takibi
+            Route::prefix('regions')->group(function () {
+                Route::get('/',                      [AgentRegionController::class, 'index']);
+                Route::post('/',                     [AgentRegionController::class, 'store']);
+                Route::delete('/{region}',           [AgentRegionController::class, 'destroy']);
+                Route::patch('/{region}/toggle',     [AgentRegionController::class, 'toggle']);
+            });
         });
 
         // ── ADMİN ────────────────────────────────────────────
@@ -98,3 +128,13 @@ Route::middleware(['auth:sanctum', 'auth.token', 'user.status', 'throttle:api'])
         });
     });
 });
+
+
+// ─────────────────────────────────────────────────────────────
+// REVERB BROADCAST AUTH
+// ─────────────────────────────────────────────────────────────
+Route::post('/broadcasting/auth', function (\Illuminate\Http\Request $request) {
+    // JSON response zorla
+    $request->headers->set('Accept', 'application/json');
+    return \Illuminate\Support\Facades\Broadcast::auth($request);
+})->middleware(['auth:sanctum']);

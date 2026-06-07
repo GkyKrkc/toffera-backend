@@ -169,21 +169,32 @@ class AuthController extends Controller
     // ─────────────────────────────────────────────────────────
     public function me(Request $request): JsonResponse
     {
-        $user = $request->user()->load('agentDocuments');
+        $user = $request->user()->load([
+            'agentDocuments',
+            'addresses' => fn($q) => $q->orderByDesc('is_default'),
+        ]);
 
         return response()->json([
             'user' => array_merge($this->userResponse($user), [
-                'offer_limit'         => $user->offer_limit,
-                'remaining_offers'    => $user->remainingOffers(),
-                'subscription_plan'   => $user->subscription_plan,
-                'subscription_ends_at'=> $user->subscription_ends_at?->toDateString(),
+                'offer_limit'             => $user->offer_limit,
+                'remaining_offers'        => $user->remainingOffers(),
+                'subscription_plan'       => $user->subscription_plan,
+                'subscription_ends_at'    => $user->subscription_ends_at?->toDateString(),
                 'has_active_subscription' => $user->hasActiveSubscription(),
-                'agent_documents'     => $user->agentDocuments->map(fn($d) => [
+                'agent_documents'         => $user->agentDocuments->map(fn($d) => [
                     'type'          => $d->document_type,
                     'type_label'    => $d->type_label,
                     'original_name' => $d->original_name,
                     'file_size'     => $d->file_size_human,
                     'uploaded_at'   => $d->created_at->format('d.m.Y'),
+                ]),
+                'addresses' => $user->addresses->map(fn($a) => [
+                    'id'           => $a->id,
+                    'title'        => $a->title,
+                    'city'         => $a->city,
+                    'district'     => $a->district,
+                    'neighborhood' => $a->neighborhood,
+                    'is_default'   => $a->is_default,
                 ]),
             ]),
         ]);

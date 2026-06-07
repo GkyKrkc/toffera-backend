@@ -14,7 +14,7 @@ return new class extends Migration
         Schema::create('offers', function (Blueprint $table) {
         $table->id();
         $table->foreignId('demand_id')->constrained()->onDelete('cascade');
-        $table->foreignId('agent_id')->constrained('users')->onDelete('cascade');
+        $table->foreignId('user_id')->constrained('users')->onDelete('cascade');
         $table->string('price')->nullable();
         $table->text('message');
         $table->string('portfolio_url')->nullable();

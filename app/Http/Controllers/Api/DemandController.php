@@ -17,7 +17,7 @@ class DemandController extends Controller
     public function index(Request $request): JsonResponse
     {
         $query = Demand::active()
-            ->with(['category:id,name,slug,icon', 'user:id,name,company_name'])
+            ->with(['category:id,name,slug,icon'])
             ->withCount('offers');
 
         // Kategori filtresi
@@ -79,12 +79,11 @@ class DemandController extends Controller
     // ─────────────────────────────────────────────────────────
     public function show(Demand $demand): JsonResponse
     {
-        $demand->load([
-            'category',
-            'user:id,name,company_name',
-            'offers.user:id,name,company_name',
-        ]);
+        $demand->load(['category', 'offers.user:id,name,company_name,agent_type']);
         $demand->loadCount('offers');
+
+        // user_id'yi frontend için gönder ama kişisel bilgi gönderme
+        // Sadece kabul edilen teklif sahibi ilan sahibini görebilir — bu OfferController'da çözüldü
 
         return response()->json($demand);
     }
@@ -95,37 +94,40 @@ class DemandController extends Controller
     // ─────────────────────────────────────────────────────────
     public function store(Request $request): JsonResponse
     {
-        $request->validate([
-            'category_id' => 'required|exists:categories,id',
-            'title'       => 'required|string|max:255',
-            'description' => 'nullable|string|max:2000',
-            'district'    => 'nullable|string|max:100',
-            'min_budget'  => 'nullable|numeric|min:0',
-            'max_budget'  => 'nullable|numeric|min:0|gte:min_budget',
-            'features'    => 'nullable|array',
-        ], [
-            'category_id.exists' => 'Geçerli bir kategori seçin.',
-            'title.required'     => 'Talep başlığı zorunludur.',
-            'max_budget.gte'     => 'Maksimum bütçe, minimum bütçeden büyük olmalıdır.',
+        $validated = $request->validate([
+            'category_id'  => 'required|exists:categories,id',
+            'title'        => 'required|string|max:255',
+            'description'  => 'nullable|string|max:2000',
+            'district'     => 'nullable|string|max:255',
+            'neighborhood' => 'nullable|string|max:255',
+            'min_budget'   => 'nullable|numeric|min:0',
+            'max_budget'   => 'nullable|numeric|min:0|gte:min_budget',
+            'features'     => 'nullable|array',
+            'expires_at'   => 'nullable|date|after:now',
         ]);
 
-        $demand = Demand::create([
-            'user_id'     => $request->user()->id,
-            'category_id' => $request->category_id,
-            'title'       => $request->title,
-            'description' => $request->description,
-            'district'    => $request->district,
-            'min_budget'  => $request->min_budget,
-            'max_budget'  => $request->max_budget,
-            'features'    => $request->features,
-            'status'      => 'active',
+        $demand = $request->user()->demands()->create([
+            ...$validated,
+            'status'     => 'active',
+            'expires_at' => isset($validated['expires_at'])
+                ? \Carbon\Carbon::parse($validated['expires_at'])
+                : null,
         ]);
 
-        $demand->load('category:id,name,slug');
+        $demand->load('category');
 
+        // Bölge eşleştirme — eşleşen agent'lara SMS bildirimi gönder
+        \App\Services\DemandRegionMatcher::notifyAgents($demand);
+
+        // Gerçek zamanlı yeni ilan bildirimi
+        $matchingAgents = \App\Services\DemandRegionMatcher::findMatchingAgents($demand);
+        $agentIds = $matchingAgents->pluck('id')->toArray();
+        if (!empty($agentIds)) {
+            broadcast(new \App\Events\NewDemand($demand, $agentIds));
+        }
         return response()->json([
-            'message' => 'Talebiniz oluşturuldu.',
-            'demand'  => $demand,
+            'message' => 'Talep başarıyla oluşturuldu.',
+            'data'    => $demand,
         ], 201);
     }
 
@@ -144,6 +146,8 @@ class DemandController extends Controller
         }
 
         $demand->update(['status' => 'cancelled']);
+
+        broadcast(new \App\Events\DemandStatusChanged($demand->fresh()));
 
         return response()->json(['message' => 'Talep iptal edildi.']);
     }

@@ -18,6 +18,9 @@ class OfferController extends Controller
     {
         $user = $request->user();
 
+        // Category ilişkisini yükle
+        $demand->loadMissing('category');
+
         // Talep aktif mi?
         if (!$demand->isActive()) {
             return response()->json(['message' => 'Bu talep artık aktif değil.'], 422);
@@ -27,6 +30,30 @@ class OfferController extends Controller
         if ($demand->user_id === $user->id) {
             return response()->json(['message' => 'Kendi talebinize teklif veremezsiniz.'], 422);
         }
+
+        // ── Kategori - Uzman Tipi Uyum Kontrolü ──────────────
+        $categorySlug = $demand->category?->slug;
+        $agentType    = $user->agent_type;
+
+        $allowed = match($agentType) {
+            'emlakci'   => ['gayrimenkul'],
+            'galerici'  => ['vasita'],
+            'her_ikisi' => ['gayrimenkul', 'vasita'],
+            default     => [],
+        };
+
+        if ($categorySlug && !in_array($categorySlug, $allowed)) {
+            $tipLabel = match($agentType) {
+                'emlakci'  => 'Emlakçı',
+                'galerici' => 'Galerici',
+                default    => 'Uzman',
+            };
+            return response()->json([
+                'message' => "$tipLabel hesabınız bu kategori için teklif veremez.",
+                'code'    => 'CATEGORY_NOT_ALLOWED',
+            ], 403);
+        }
+        // ─────────────────────────────────────────────────────
 
         // Teklif limiti kontrolü
         if (!$user->canMakeOffer()) {
@@ -58,8 +85,9 @@ class OfferController extends Controller
             'status'    => 'pending',
         ]);
 
-        $offer->load(['demand:id,title', 'user:id,name,company_name']);
-
+        $offer->load(['demand:id,title,user_id', 'user:id,name,company_name']);
+        // Gerçek zamanlı bildirim
+        broadcast(new \App\Events\NewOffer($offer))->toOthers();
         return response()->json([
             'message' => 'Teklifiniz gönderildi.',
             'offer'   => $offer,
@@ -74,11 +102,37 @@ class OfferController extends Controller
     {
         $offers = Offer::where('user_id', $request->user()->id)
             ->with([
-                'demand:id,title,status,category_id',
+                'demand:id,title,status,category_id,user_id',
                 'demand.category:id,name,slug',
             ])
             ->latest()
             ->paginate(20);
+
+        // Tamamlanmış taleplerin kabul edilen teklif fiyatını ekle
+        $offers->getCollection()->transform(function ($offer) {
+            if ($offer->demand?->status === 'completed') {
+                $accepted = Offer::where('demand_id', $offer->demand_id)
+                    ->where('status', 'accepted')
+                    ->first(['id', 'price', 'user_id']);
+                if ($accepted) {
+                    $isMine = $accepted->user_id === $offer->user_id;
+                    $offer->accepted_offer = [
+                        'price'   => $accepted->price,
+                        'is_mine' => $isMine,
+                    ];
+
+                    // Sadece kabul edilen agent ilan sahibinin iletisim bilgisini gorebilir
+                    if ($isMine) {
+                        $owner = \App\Models\User::find($offer->demand->user_id, ['id', 'name', 'phone']);
+                        $offer->demand_owner_contact = $owner ? [
+                            'name'  => $owner->name,
+                            'phone' => $owner->phone,
+                        ] : null;
+                    }
+                }
+            }
+            return $offer;
+        });
 
         return response()->json($offers);
     }
@@ -130,6 +184,10 @@ class OfferController extends Controller
         // Talebi tamamlandı yap
         $demand->update(['status' => 'completed']);
 
+        // Anlık durum değişikliği bildirimi
+        broadcast(new \App\Events\DemandStatusChanged($demand->fresh()));
+        // Agent'a kabul bildirimi
+        broadcast(new \App\Events\OfferAccepted($offer->fresh(['demand.user'])));
         return response()->json([
             'message' => 'Teklif kabul edildi. Talep tamamlandı olarak işaretlendi.',
         ]);
@@ -154,5 +212,26 @@ class OfferController extends Controller
         $offer->update(['status' => 'rejected']);
 
         return response()->json(['message' => 'Teklif reddedildi.']);
+    }
+
+    // ─────────────────────────────────────────────────────────
+    // Teklifi iptal et (agent)
+    // POST /api/agent/offers/{offer}/cancel
+    // ─────────────────────────────────────────────────────────
+    public function cancel(Request $request, Offer $offer): JsonResponse
+    {
+        $user = $request->user();
+
+        if ($offer->user_id !== $user->id) {
+            return response()->json(['message' => 'Bu işlem için yetkiniz yok.'], 403);
+        }
+
+        if (!$offer->isPending()) {
+            return response()->json(['message' => 'Sadece beklemedeki teklifler iptal edilebilir.'], 422);
+        }
+
+        $offer->delete();
+
+        return response()->json(['message' => 'Teklifiniz iptal edildi.']);
     }
 }

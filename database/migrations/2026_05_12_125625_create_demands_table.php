@@ -16,13 +16,16 @@ return new class extends Migration
         $table->foreignId('user_id')->constrained()->onDelete('cascade');
         $table->foreignId('category_id')->constrained();
         $table->string('title');
+        $table->text('description')->nullable();
         $table->string('min_budget')->nullable();
         $table->string('max_budget')->nullable();
         $table->string('district')->nullable();
         $table->string('neighborhood')->nullable();
         $table->json('features'); // Seçilen kategoriye özel veriler burada (JSON)
         $table->string('duration')->default('24'); // Saat cinsinden süre
-        $table->enum('status', ['active', 'completed', 'cancelled'])->default('active');
+        $table->timestamp('expires_at')->nullable();
+        $table->unsignedTinyInteger('duration_hours')->nullable();
+        $table->enum('status', ['active', 'completed', 'cancelled', 'expired'])->default('active');
         $table->timestamps();
     });
     }

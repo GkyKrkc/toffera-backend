@@ -14,18 +14,23 @@ class Demand extends Model
         'title',
         'description',
         'district',
+        'neighborhood',
         'min_budget',
         'max_budget',
         'features',
+        'expires_at',
+        'duration_hours',
         'status',
     ];
 
     protected function casts(): array
     {
         return [
-            'features'   => 'array',
-            'min_budget' => 'decimal:2',
-            'max_budget' => 'decimal:2',
+            'features'       => 'array',
+            'min_budget'     => 'decimal:2',
+            'max_budget'     => 'decimal:2',
+            'expires_at'     => 'datetime',
+            'duration_hours' => 'integer',
         ];
     }
 
@@ -48,9 +53,30 @@ class Demand extends Model
 
     // ── Scope'lar ─────────────────────────────────────────────
 
+    /**
+     * Sadece aktif ve süresi dolmamış ilanlar
+     */
     public function scopeActive($query)
     {
-        return $query->where('status', 'active');
+        return $query->where('status', 'active')
+            ->where(function ($q) {
+                $q->whereNull('expires_at')
+                    ->orWhere('expires_at', '>', now());
+            });
+    }
+
+    /**
+     * Süresi dolmuş ilanlar (status fark etmez)
+     */
+    public function scopeExpired($query)
+    {
+        return $query->where(function ($q) {
+            $q->where('status', 'expired')
+                ->orWhere(function ($q2) {
+                    $q2->whereNotNull('expires_at')
+                        ->where('expires_at', '<=', now());
+                });
+        });
     }
 
     public function scopeByCategory($query, string $slug)
@@ -74,11 +100,32 @@ class Demand extends Model
 
     public function isActive(): bool
     {
-        return $this->status === 'active';
+        return $this->status === 'active' && !$this->isExpired();
+    }
+
+    public function isExpired(): bool
+    {
+        return $this->status === 'expired'
+            || ($this->expires_at !== null && $this->expires_at->isPast());
+    }
+
+    public function isPending(): bool
+    {
+        return $this->status === 'pending';
     }
 
     public function isOwnedBy(User $user): bool
     {
         return $this->user_id === $user->id;
+    }
+
+    /**
+     * İlanın kaç saniye kaldığını döner, süresi yoksa null
+     */
+    public function remainingSeconds(): ?int
+    {
+        if (!$this->expires_at) return null;
+        $diff = $this->expires_at->getTimestamp() - now()->getTimestamp();
+        return max(0, $diff);
     }
 }
