@@ -7,6 +7,7 @@ use App\Models\Category;
 use App\Models\Demand;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use App\Services\PortfolioMatcher;
 
 class DemandController extends Controller
 {
@@ -94,37 +95,66 @@ class DemandController extends Controller
     // ─────────────────────────────────────────────────────────
     public function store(Request $request): JsonResponse
     {
+        // Slug → ID çözümle
+        $categoryId = $request->category_id;
+        if (!$categoryId && $request->category_slug) {
+            $category = Category::where('slug', $request->category_slug)->first();
+            if (!$category) {
+                return response()->json(['message' => 'Geçersiz kategori.', 'errors' => ['category_slug' => ['Kategori bulunamadı.']]], 422);
+            }
+            $categoryId = $category->id;
+        }
+
         $validated = $request->validate([
-            'category_id'  => 'required|exists:categories,id',
-            'title'        => 'required|string|max:255',
-            'description'  => 'nullable|string|max:2000',
-            'district'     => 'nullable|string|max:255',
-            'neighborhood' => 'nullable|string|max:255',
-            'min_budget'   => 'nullable|numeric|min:0',
-            'max_budget'   => 'nullable|numeric|min:0|gte:min_budget',
-            'features'     => 'nullable|array',
-            'expires_at'   => 'nullable|date|after:now',
+            'title'          => 'required|string|max:255',
+            'description'    => 'nullable|string|max:2000',
+            'district'       => 'nullable|string|max:255',
+            'neighborhood'   => 'nullable|string|max:255',
+            'min_budget'     => 'nullable|numeric|min:0',
+            'max_budget'     => 'nullable|numeric|min:0',
+            'features'       => 'nullable|array',
+            'duration_hours' => 'nullable|integer|min:0',
+            'expires_at'     => 'nullable|date|after:now',
         ]);
+
+        if (!$categoryId) {
+            return response()->json(['message' => 'Kategori zorunludur.', 'errors' => ['category' => ['Kategori seçimi yapılmadı.']]], 422);
+        }
 
         $demand = $request->user()->demands()->create([
             ...$validated,
-            'status'     => 'active',
-            'expires_at' => isset($validated['expires_at'])
+            'category_id' => $categoryId,
+            'status'      => 'active',
+            'expires_at'  => isset($validated['expires_at'])
                 ? \Carbon\Carbon::parse($validated['expires_at'])
                 : null,
         ]);
 
         $demand->load('category');
 
-        // Bölge eşleştirme — eşleşen agent'lara SMS bildirimi gönder
         \App\Services\DemandRegionMatcher::notifyAgents($demand);
 
-        // Gerçek zamanlı yeni ilan bildirimi
         $matchingAgents = \App\Services\DemandRegionMatcher::findMatchingAgents($demand);
         $agentIds = $matchingAgents->pluck('id')->toArray();
         if (!empty($agentIds)) {
             broadcast(new \App\Events\NewDemand($demand, $agentIds));
         }
+
+        // Portföy eşleşmesi — portföyünde uygun stok olan acentelere bildirim
+        $portfolioMatches = \App\Services\PortfolioMatcher::findMatchingAgents($demand);
+        if ($portfolioMatches->isNotEmpty()) {
+            \App\Services\PortfolioMatcher::markNotified($portfolioMatches, $demand->id);
+
+            $portfolioAgentIds = $portfolioMatches->pluck('agent.id')->unique()->toArray();
+            // Mevcut region matcher ile birleştir — tekrar SMS gitmesin
+            foreach ($portfolioMatches as $match) {
+                // WebSocket bildirimi
+                if (!in_array($match['agent']->id, $agentIds)) {
+                    broadcast(new \App\Events\NewDemand($demand, [$match['agent']->id]));
+                }
+            }
+        }
+
         return response()->json([
             'message' => 'Talep başarıyla oluşturuldu.',
             'data'    => $demand,

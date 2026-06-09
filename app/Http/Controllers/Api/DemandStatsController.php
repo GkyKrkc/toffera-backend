@@ -7,56 +7,83 @@ use App\Models\Demand;
 use App\Models\Offer;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 
 class DemandStatsController extends Controller
 {
-    // GET /api/demands/stats/cities
     public function cities(): JsonResponse
     {
         $stats = Demand::where('status', 'active')
             ->whereNotNull('district')
-            ->where(function ($q) {
-                $q->whereNull('expires_at')
-                    ->orWhere('expires_at', '>', now());
-            })
+            ->where(fn($q) => $q->whereNull('expires_at')->orWhere('expires_at', '>', now()))
             ->get(['district'])
-            ->groupBy(function ($d) {
-                $parts = explode(',', $d->district);
-                return trim(end($parts));
-            })
-            ->map(fn($group) => $group->count())
-            ->sortDesc()
-            ->toArray();
+            ->groupBy(fn($d) => trim(end(explode(',', $d->district))))
+            ->map(fn($g) => $g->count())
+            ->sortDesc()->toArray();
 
         return response()->json($stats);
     }
 
-    // GET /api/demands/stats/summary
-    public function summary(): JsonResponse
+    public function summary(Request $request): JsonResponse
     {
-        $activeDemands = Demand::where('status', 'active')
-            ->where(function ($q) {
-                $q->whereNull('expires_at')
-                    ->orWhere('expires_at', '>', now());
-            })
-            ->count();
+        $city     = $request->query('city');
+        $district = $request->query('district');
 
-        $totalAgents = User::whereHas('roles', fn($q) =>
-        $q->where('name', 'agent')
-        )->where('status', 'active')->count();
+        // Aktif talepler
+        $demandQ = Demand::where('status', 'active')
+            ->where(fn($q) => $q->whereNull('expires_at')->orWhere('expires_at', '>', now()));
 
-        $avgOfferMinutes = Offer::join('demands', 'offers.demand_id', '=', 'demands.id')
-            ->selectRaw('AVG(TIMESTAMPDIFF(MINUTE, demands.created_at, offers.created_at)) as avg_mins')
-            ->value('avg_mins');
+        if ($district) {
+            $demandQ->where('district', 'like', "%{$district}%");
+        } elseif ($city) {
+            $demandQ->where('district', 'like', "%{$city}%");
+        }
 
-        $avgMins  = $avgOfferMinutes ? round($avgOfferMinutes) : null;
-        $avgLabel = $avgMins
+        $activeDemands = $demandQ->count();
+
+        // Uzman sayısı
+        $agentQ = User::whereHas('roles', fn($q) => $q->where('name', 'agent'))
+            ->where('status', 'active');
+
+        if ($city || $district) {
+            $agentQ->whereHas('regions', function ($q) use ($city, $district) {
+                if ($district) {
+                    $q->where('district', 'like', "%{$district}%");
+                } elseif ($city) {
+                    $q->where('city', 'like', "%{$city}%");
+                }
+            });
+        }
+
+        $totalAgents = $agentQ->count();
+
+        // Ortalama teklif süresi
+        $offerQ = Offer::join('demands', 'offers.demand_id', '=', 'demands.id')
+            ->selectRaw('AVG(TIMESTAMPDIFF(MINUTE, demands.created_at, offers.created_at)) as avg_mins');
+
+        if ($district) {
+            $offerQ->where('demands.district', 'like', "%{$district}%");
+        } elseif ($city) {
+            $offerQ->where('demands.district', 'like', "%{$city}%");
+        }
+
+        $avgMins  = round($offerQ->value('avg_mins') ?? 0);
+        $avgLabel = $avgMins > 0
             ? ($avgMins < 60 ? "{$avgMins} Dk" : round($avgMins / 60) . " Sa")
             : "—";
 
-        $total     = Demand::count();
-        $completed = Demand::where('status', 'completed')->count();
-        $rate      = $total > 0 ? round(($completed / $total) * 100, 1) : 0;
+        // Başarı oranı
+        $totalQ = Demand::query();
+        $completedQ = Demand::where('status', 'completed');
+        if ($district) {
+            $totalQ->where('district', 'like', "%{$district}%");
+            $completedQ->where('district', 'like', "%{$district}%");
+        } elseif ($city) {
+            $totalQ->where('district', 'like', "%{$city}%");
+            $completedQ->where('district', 'like', "%{$city}%");
+        }
+        $total = $totalQ->count();
+        $rate  = $total > 0 ? round(($completedQ->count() / $total) * 100, 1) : 0;
 
         return response()->json([
             'active_demands' => $activeDemands,
