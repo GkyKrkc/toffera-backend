@@ -1,7 +1,7 @@
 <?php
 
 namespace App\Filament\Admin\Resources;
-
+use App\Filament\Admin\Resources\UserResource\RelationManagers;
 use App\Filament\Admin\Resources\UserResource\Pages;
 use App\Models\User;
 use App\Services\UserStatusService;
@@ -21,6 +21,12 @@ class UserResource extends Resource
     protected static ?string $modelLabel       = 'Kullanıcı';
     protected static ?string $pluralModelLabel = 'Kullanıcılar';
     protected static ?int    $navigationSort   = 2;
+
+    /** Bayilik sistemi: kullanıcı yönetimi (agent onayı, ban vb.) sadece admin görür. */
+    public static function canViewAny(): bool
+    {
+        return auth()->user()?->hasRole('admin') ?? false;
+    }
 
     public static function form(Form $form): Form
     {
@@ -116,6 +122,11 @@ class UserResource extends Resource
                         'warning'   => 'premium',
                         'success'   => 'pro',
                     ]),
+                Tables\Columns\TextColumn::make('credit_balance')
+                    ->label('Kontör')
+                    ->badge()
+                    ->color(fn($state) => $state > 0 ? 'success' : 'gray')
+                    ->sortable(),
                 Tables\Columns\TextColumn::make('created_at')
                     ->label('Kayıt Tarihi')->dateTime('d.m.Y')->sortable(),
             ])
@@ -170,11 +181,42 @@ class UserResource extends Resource
                         Notification::make()->title('Ban kaldırıldı.')->success()->send();
                     })
                     ->visible(fn(User $record) => $record->is_banned),
-
+                Tables\Actions\Action::make('addCredits')
+                    ->label('Kontör Yükle')
+                    ->icon('heroicon-o-plus-circle')
+                    ->color('success')
+                    ->form([
+                        Forms\Components\TextInput::make('amount')
+                            ->label('Yüklenecek Kontör')
+                            ->numeric()
+                            ->required()
+                            ->minValue(1),
+                        Forms\Components\TextInput::make('description')
+                            ->label('Açıklama (opsiyonel)')
+                            ->placeholder('Örn: Banka havalesi ile 50 kontör'),
+                    ])
+                    ->action(function (User $record, array $data) {
+                        try {
+                            $record->addCredits((int) $data['amount'], $data['description'] ?? null);
+                            Notification::make()
+                                ->title($data['amount'] . ' kontör yüklendi.')
+                                ->success()
+                                ->send();
+                        } catch (\Exception $e) {
+                            Notification::make()->title($e->getMessage())->danger()->send();
+                        }
+                    }),
                 Tables\Actions\EditAction::make()->label('Düzenle'),
             ]);
     }
 
+    public static function getRelations(): array
+    {
+        return [
+            RelationManagers\ItemOfferGrantsRelationManager::class,
+            RelationManagers\CategoryPermissionsRelationManager::class,
+        ];
+    }
     public static function getPages(): array
     {
         return [

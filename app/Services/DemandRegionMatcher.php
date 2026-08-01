@@ -2,8 +2,10 @@
 
 namespace App\Services;
 
+use App\Enums\NotificationType;
 use App\Models\AgentRegion;
 use App\Models\Demand;
+use App\Notifications\AppNotification;
 use Illuminate\Support\Collection;
 
 class DemandRegionMatcher
@@ -39,7 +41,17 @@ class DemandRegionMatcher
     }
 
     /**
-     * Eşleşen agent'lara SMS bildirimi gönder
+     * Eşleşen agent'lara bildirim gönder.
+     *
+     * ÖNCEDEN: app(SmsService::class)->send(...) çağrılıyordu — bu metod
+     * SmsService'te HİÇ YOKTU (sadece sendOtp/verifyOtp/canResend var),
+     * yani bu çağrı BadMethodCallException fırlatıyordu ve catch bloğu
+     * sessizce yutuyordu. Bölge bildirimleri muhtemelen hiç gitmiyordu.
+     *
+     * ARTIK: AppNotification üzerinden gidiyor — database + broadcast
+     * (uygulama içi bildirim çanı) her zaman, SMS DEMAND_MATCHED için
+     * varsayılan olarak kapalı (NotificationType::channels()'a bakınız).
+     * SMS de istiyorsan enum'da DEMAND_MATCHED'i sms listesine ekleriz.
      */
     public static function notifyAgents(Demand $demand): void
     {
@@ -47,11 +59,11 @@ class DemandRegionMatcher
 
         foreach ($agents as $agent) {
             try {
-                // Mevcut SMS servisini kullan
-                app(\App\Services\SmsService::class)->send(
-                    $agent->phone,
-                    "TOFFERA: {$demand->district} bölgesinde yeni bir {$demand->category?->name} talebi oluşturuldu. Teklif vermek için uygulamayı açın."
-                );
+                $agent->notify(new AppNotification(NotificationType::DEMAND_MATCHED, [
+                    'demand_id'    => $demand->id,
+                    'demand_title' => $demand->title,
+                    'action_url'   => "/market/{$demand->id}",
+                ]));
             } catch (\Throwable $e) {
                 \Log::warning("Bölge bildirimi gönderilemedi", [
                     'agent_id'  => $agent->id,

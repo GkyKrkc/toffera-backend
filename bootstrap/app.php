@@ -29,7 +29,6 @@ return Application::configure(basePath: dirname(__DIR__))
             'phone.verified' => \App\Http\Middleware\EnsurePhoneVerified::class,
             'agent.approved' => \App\Http\Middleware\EnsureAgentApproved::class,
             'auth.token'     => \App\Http\Middleware\EnsureAuthToken::class,
-            'offer.limit'    => \App\Http\Middleware\CheckOfferLimit::class,
         ]);
     })
     ->withProviders([

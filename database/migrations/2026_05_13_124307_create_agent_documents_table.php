@@ -12,12 +12,14 @@ return new class extends Migration
             $table->id();
             $table->foreignId('user_id')->constrained()->cascadeOnDelete();
 
-            $table->enum('document_type', [
-                'isyeri_belgesi',   // İşyeri faaliyet belgesi / kira kontratı
-                'ticaret_sicili',   // Ticaret sicil kaydı
-                'esnaf_oda_kaydi',  // Esnaf / meslek odası belgesi
-                'vergi_levhasi',    // Vergi levhası
-            ]);
+            // Serbest string (enum DEĞİL) — kategori bazlı dinamik belge
+            // sistemine (Category.required_documents → runtime'da üretilen
+            // belge listesi) izin vermek için. AgentDocument::TYPE_LABELS
+            // sabitindeki 4 klasik değer (isyeri_belgesi, ticaret_sicili,
+            // esnaf_oda_kaydi, vergi_levhasi) hâlâ fallback etiket olarak
+            // kullanılıyor, ama kolonun kendisi artık bunlarla sınırlı değil
+            // (ör. "galeri_ruhsati" gibi yeni belge türleri de eklenebilir).
+            $table->string('document_type');
 
             $table->string('file_path');           // storage/private disk'teki yol
             $table->string('original_name');       // Yüklenen dosyanın orijinal adı

@@ -3,7 +3,9 @@
 namespace App\Filament\Admin\Resources;
 
 use App\Filament\Admin\Resources\AgentApplicationResource\Pages;
+use App\Models\AccountTypeGroup;
 use App\Models\User;
+use App\Services\CategoryAccessService;
 use App\Services\UserStatusService;
 use Filament\Forms;
 use Filament\Forms\Form;
@@ -28,6 +30,12 @@ class AgentApplicationResource extends Resource
         return parent::getEloquentQuery()->role('agent');
     }
 
+    /** Bayilik sistemi: uzman başvuru/belge onayı SADECE genel merkezde (admin) kalır. */
+    public static function canViewAny(): bool
+    {
+        return auth()->user()?->hasRole('admin') ?? false;
+    }
+
     public static function form(Form $form): Form
     {
         return $form->schema([
@@ -41,13 +49,11 @@ class AgentApplicationResource extends Resource
                         ->label('E-posta')->disabled(),
                     Forms\Components\TextInput::make('company_name')
                         ->label('Firma / İşletme Adı')->disabled(),
-                    Forms\Components\Select::make('agent_type')
-                        ->label('Uzman Türü')
-                        ->options([
-                            'emlakci'   => 'Emlakçı',
-                            'galerici'  => 'Galerici',
-                            'her_ikisi' => 'Emlakçı + Galerici',
-                        ])->disabled(),
+                    Forms\Components\Select::make('account_type_group_id')
+                        ->label('Uzmanlık Tipi')
+                        ->options(fn () => AccountTypeGroup::commercial()->active()->orderBy('sort_order')->pluck('name', 'id'))
+                        ->native(false)
+                        ->helperText('Bu uzmanın hangi kategorilerde teklif verebileceğini belirler (bkz. Hesap Grupları → Kategoriler). Kullanıcının kayıtta seçtiği değer — kaydedince (veya "Onayla" ile) admin\'in son kararına göre güncellenir ve kategori yetkileri yeniden hesaplanır.'),
                     Forms\Components\Select::make('status')
                         ->label('Durum')
                         ->options([
@@ -86,19 +92,11 @@ class AgentApplicationResource extends Resource
                     ->label('Telefon')->searchable(),
                 Tables\Columns\TextColumn::make('company_name')
                     ->label('Firma')->searchable()->default('-'),
-                Tables\Columns\BadgeColumn::make('agent_type')
-                    ->label('Tür')
-                    ->formatStateUsing(fn($state) => match($state) {
-                        'emlakci'   => 'Emlakçı',
-                        'galerici'  => 'Galerici',
-                        'her_ikisi' => 'Her ikisi',
-                        default     => '-',
-                    })
-                    ->colors([
-                        'primary' => 'emlakci',
-                        'success' => 'galerici',
-                        'warning' => 'her_ikisi',
-                    ]),
+                Tables\Columns\TextColumn::make('accountTypeGroup.name')
+                    ->label('Uzmanlık Tipi')
+                    ->badge()
+                    ->color('primary')
+                    ->placeholder('Henüz atanmadı'),
                 Tables\Columns\BadgeColumn::make('status')
                     ->label('Durum')
                     ->formatStateUsing(fn($state) => match($state) {
@@ -126,24 +124,30 @@ class AgentApplicationResource extends Resource
                         'active'   => 'Aktif',
                         'rejected' => 'Reddedildi',
                     ]),
-                Tables\Filters\SelectFilter::make('agent_type')
-                    ->label('Uzman Türü')
-                    ->options([
-                        'emlakci'   => 'Emlakçı',
-                        'galerici'  => 'Galerici',
-                        'her_ikisi' => 'Her ikisi',
-                    ]),
+                Tables\Filters\SelectFilter::make('account_type_group_id')
+                    ->label('Uzmanlık Tipi')
+                    ->options(fn () => AccountTypeGroup::commercial()->pluck('name', 'id')),
             ])
             ->actions([
                 Tables\Actions\Action::make('approve')
                     ->label('Onayla')
                     ->icon('heroicon-o-check-circle')
                     ->color('success')
-                    ->requiresConfirmation()
                     ->modalHeading('Başvuruyu Onayla')
-                    ->modalDescription('Bu uzman hesabını aktif hale getirmek istediğinizden emin misiniz?')
-                    ->action(function (User $record) {
+                    ->modalDescription('Uzmanlık tipini (dolayısıyla teklif verebileceği kategorileri) onaylamadan önce son kez kontrol edin/değiştirin.')
+                    ->form([
+                        Forms\Components\Select::make('account_type_group_id')
+                            ->label('Uzmanlık Tipi')
+                            ->options(fn () => AccountTypeGroup::commercial()->active()->orderBy('sort_order')->pluck('name', 'id'))
+                            ->default(fn (User $record) => $record->account_type_group_id)
+                            ->required()
+                            ->native(false)
+                            ->helperText('Bu uzman hangi kategorilerde teklif verebilecek, bu seçime göre belirlenir.'),
+                    ])
+                    ->action(function (User $record, array $data) {
                         try {
+                            $record->update(['account_type_group_id' => $data['account_type_group_id']]);
+                            app(CategoryAccessService::class)->syncFromGroup($record->fresh());
                             app(UserStatusService::class)->approveAgent($record);
                             Notification::make()->title('Başvuru onaylandı.')->success()->send();
                         } catch (\Exception $e) {
@@ -173,11 +177,16 @@ class AgentApplicationResource extends Resource
                 Tables\Actions\EditAction::make()->label('Düzenle'),
             ])
             ->bulkActions([
+                // NOT: toplu onayda uzmanlık tipi DEĞİŞTİRİLMEZ — her kaydın
+                // kayıtta seçtiği (veya daha önce "Düzenle"den ayarlanmış)
+                // account_type_group_id'si neyse öyle kalır. Farklı uzmanlık
+                // tipi atamak/kontrol etmek gerekiyorsa tek tek "Onayla" kullanın.
                 Tables\Actions\BulkAction::make('bulk_approve')
                     ->label('Toplu Onayla')
                     ->icon('heroicon-o-check')
                     ->color('success')
                     ->requiresConfirmation()
+                    ->modalDescription('Uzmanlık tipi her kayıtta OLDUĞU GİBİ kalır, değiştirilmez. Kontrol etmeniz gerekiyorsa tek tek "Onayla" kullanın.')
                     ->action(function ($records) {
                         $service = app(UserStatusService::class);
                         $records->each(function ($record) use ($service) {

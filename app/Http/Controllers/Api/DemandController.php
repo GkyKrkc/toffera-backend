@@ -8,6 +8,7 @@ use App\Models\Demand;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use App\Services\PortfolioMatcher;
+use App\Services\CategoryAccessService;
 
 class DemandController extends Controller
 {
@@ -18,34 +19,62 @@ class DemandController extends Controller
     public function index(Request $request): JsonResponse
     {
         $query = Demand::active()
+            ->where('moderation_status', 'approved')
             ->with(['category:id,name,slug,icon'])
-            ->withCount('offers');
+            ->withCount(['offers' => fn($q) => $q->where('moderation_status', 'approved')]);
 
-        // Kategori filtresi
         if ($request->category) {
             $query->byCategory($request->category);
         }
 
-        // İlçe filtresi
         if ($request->district) {
             $query->byDistrict($request->district);
         }
 
-        // Bütçe filtresi
+        // Anasayfa/vitrin üst filtre çubuğundaki İl/İlçe/Mahalle seçimleri.
+        // Konum, talep oluştururken `features` JSON'ı içine yazılıyor
+        // (il/ilce/mahalleler — bkz. store()), ayrı sütun değil. Eski
+        // serbest metin `district` sütunu da (varsa) yedek olarak taranıyor.
+        if ($request->filled('il')) {
+            $il = $request->il;
+            $query->where(function ($q) use ($il) {
+                $q->where('features->il', $il)
+                    ->orWhere('district', 'like', "%{$il}%");
+            });
+        }
+
+        if ($request->filled('ilce')) {
+            $ilce = $request->ilce;
+            $query->where(function ($q) use ($ilce) {
+                $q->where('features->ilce', $ilce)
+                    ->orWhere('district', 'like', "%{$ilce}%");
+            });
+        }
+
+        if ($request->filled('mahalle')) {
+            $mahalleler = array_filter((array) $request->mahalle);
+            if ($mahalleler) {
+                $query->where(function ($q) use ($mahalleler) {
+                    foreach ($mahalleler as $m) {
+                        $q->orWhereJsonContains('features->mahalleler', $m)
+                            ->orWhere('neighborhood', $m);
+                    }
+                });
+            }
+        }
+
         if ($request->min_budget || $request->max_budget) {
             $query->byBudget($request->min_budget, $request->max_budget);
         }
 
-        // Metin arama
         if ($request->search) {
             $query->where(function ($q) use ($request) {
                 $q->where('title', 'like', "%{$request->search}%")
-                  ->orWhere('description', 'like', "%{$request->search}%")
-                  ->orWhere('district', 'like', "%{$request->search}%");
+                    ->orWhere('description', 'like', "%{$request->search}%")
+                    ->orWhere('district', 'like', "%{$request->search}%");
             });
         }
 
-        // Sıralama
         match ($request->sort) {
             'oldest'      => $query->oldest(),
             'most_offers' => $query->orderByDesc('offers_count'),
@@ -54,7 +83,8 @@ class DemandController extends Controller
             default       => $query->latest(),
         };
 
-        $demands = $query->paginate(12);
+        $perPage = min((int) $request->input('per_page', 12), 48);
+        $demands = $query->paginate($perPage);
 
         return response()->json($demands);
     }
@@ -62,12 +92,14 @@ class DemandController extends Controller
     // ─────────────────────────────────────────────────────────
     // Müşterinin kendi talepleri
     // GET /api/buyer/demands
+    // Not: bilerek moderation_status filtresi YOK — kullanıcı kendi
+    // pending/rejected talebini de görebilmeli (durumunu takip edebilsin).
     // ─────────────────────────────────────────────────────────
     public function myDemands(Request $request): JsonResponse
     {
         $demands = Demand::where('user_id', $request->user()->id)
             ->with(['category:id,name,slug'])
-            ->withCount('offers')
+            ->withCount(['offers' => fn($q) => $q->where('moderation_status', 'approved')])
             ->latest()
             ->paginate(20);
 
@@ -78,15 +110,69 @@ class DemandController extends Controller
     // Talep detayı
     // GET /api/demands/{demand}
     // ─────────────────────────────────────────────────────────
-    public function show(Demand $demand): JsonResponse
+    public function show(Request $request, Demand $demand): JsonResponse
     {
-        $demand->load(['category', 'offers.user:id,name,company_name,agent_type']);
-        $demand->loadCount('offers');
+        // Onaysız/reddedilmiş talep, sahibi olmayan hiç kimseye görünmemeli.
+        // 403 değil 404 dönüyoruz bilerek: "yetkin yok" mesajı talebin var
+        // olduğunu ele verir, "bulunamadı" daha güvenli.
+        if ($demand->moderation_status !== 'approved') {
+            return response()->json(['message' => 'Talep bulunamadı.'], 404);
+        }
 
-        // user_id'yi frontend için gönder ama kişisel bilgi gönderme
-        // Sadece kabul edilen teklif sahibi ilan sahibini görebilir — bu OfferController'da çözüldü
+        $demand->load(['category', 'user:id,name,phone']);
+        $demand->loadCount(['offers' => fn($q) => $q->where('moderation_status', 'approved')]);
+
+        // ÖNEMLİ: bu route public (auth:sanctum middleware'i YOK, misafirler
+        // de talep detayını görebilsin diye). $request->user() middleware
+        // çalışmadığı için varsayılan guard'a (config/auth.php: 'web', yani
+        // çerez/session tabanlı) düşüyor — API isteklerinde çerez olmadığı
+        // için bearer token geçerli olsa BİLE her zaman null dönüyordu. Guard'ı
+        // açıkça 'sanctum' vererek token'ı doğru şekilde çözüyoruz.
+        $user = $request->user('sanctum');
+
+        // Talep sahibinin adı/soyadı — kendisi hariç HERKESE maskelenmiş
+        // gider ("Doğrulanmış Alıcı G**** K********" gibi). Ham isim asla
+        // API cevabında dışarı sızmaz; frontend owner_masked_name alanını
+        // kullanmalı, ne $demand->user->name ne de user objesinin kendisi
+        // görünür kalır.
+        $demand->owner_masked_name = $demand->user ? self::maskName($demand->user->name) : null;
+        $demand->is_own_demand     = $user && $demand->user_id === $user->id;
+        $demand->makeHidden('user');
+
+        // Giriş yapmış kullanıcı bu talebin kategorisinde teklif vermeye
+        // YETKİLİ mi (capability katmanı — kontör/abonelik kapasitesi DEĞİL,
+        // sadece hesap tipinin bu iş kolunda iş yapma izni var mı).
+        // Frontend (DemandDetailPage) eskiden bunu kullanıcının eski
+        // agent_type ENUM'una (emlakci/galerici) bakarak client-side tahmin
+        // ediyordu — AccountTypeGroup sistemine geçilince yeni hesaplarda
+        // agent_type boş kaldığından, yetkisi OLAN kullanıcılara bile yanlış
+        // "yetkiniz yok" uyarısı gösteriliyordu. Artık gerçek kaynaktan
+        // (user_category_permissions) okunuyor — OfferController::store()
+        // içindeki hasOfferCapability() kontrolüyle birebir aynı.
+        $demand->can_offer_capability = ($user && $demand->category)
+            ? app(CategoryAccessService::class)->hasOfferCapability($user, $demand->category)
+            : false;
 
         return response()->json($demand);
+    }
+
+    /**
+     * "Gökay Karakuş" → "G**** K******". Her kelimenin ilk harfi kalır,
+     * kalan harf sayısı kadar yıldız eklenir — talep sahibinin kimliğini
+     * gizlerken isim uzunluğu hissini korur (ör. mockup: "G**** K********").
+     * Tek harflik kelimeler (baş harf gibi) olduğu gibi bırakılır.
+     */
+    private static function maskName(?string $name): ?string
+    {
+        if (!$name) return null;
+
+        $words = preg_split('/\s+/', trim($name));
+
+        return collect($words)->map(function ($word) {
+            $len = mb_strlen($word);
+            if ($len <= 1) return $word;
+            return mb_substr($word, 0, 1) . str_repeat('*', $len - 1);
+        })->implode(' ');
     }
 
     // ─────────────────────────────────────────────────────────
@@ -95,7 +181,6 @@ class DemandController extends Controller
     // ─────────────────────────────────────────────────────────
     public function store(Request $request): JsonResponse
     {
-        // Slug → ID çözümle
         $categoryId = $request->category_id;
         if (!$categoryId && $request->category_slug) {
             $category = Category::where('slug', $request->category_slug)->first();
@@ -115,12 +200,38 @@ class DemandController extends Controller
             'features'       => 'nullable|array',
             'duration_hours' => 'nullable|integer|min:0',
             'expires_at'     => 'nullable|date|after:now',
+            'min_match_percent' => 'nullable|integer|in:60,80,100',
         ]);
 
         if (!$categoryId) {
             return response()->json(['message' => 'Kategori zorunludur.', 'errors' => ['category' => ['Kategori seçimi yapılmadı.']]], 422);
         }
 
+        // Konum bilgisi: gayrimenkul talebi zaten kendi il/ilçe/mahalle
+        // seçicisinden features.il/ilce/mahalleler dolduruyor. Vasıta gibi
+        // kendi lokasyon seçicisi olmayan talep türlerinde ise, kullanıcının
+        // profilindeki varsayılan adres (yoksa ilk adres) otomatik kullanılır
+        // — böylece il/ilçe filtresi tüm talep türlerinde çalışır.
+        $features = $validated['features'] ?? [];
+        if (empty($features['il'])) {
+            $defaultAddress = $request->user()->addresses()->where('is_default', true)->first()
+                ?? $request->user()->addresses()->first();
+
+            if ($defaultAddress) {
+                $features['il']   = $defaultAddress->city;
+                $features['ilce'] = $defaultAddress->district;
+                if ($defaultAddress->neighborhood) {
+                    $features['mahalleler'] = [$defaultAddress->neighborhood];
+                }
+            }
+        }
+        $validated['features'] = $features;
+
+        // Not: moderation_status buraya elle yazılmıyor — migration'daki
+        // default('pending') otomatik atıyor. Agent bildirimi, broadcast ve
+        // "talebiniz yayına alındı" bildirimi artık burada DEĞİL,
+        // ModerationService::approveDemand() içinde (admin onayladığı an)
+        // tetikleniyor.
         $demand = $request->user()->demands()->create([
             ...$validated,
             'category_id' => $categoryId,
@@ -132,31 +243,8 @@ class DemandController extends Controller
 
         $demand->load('category');
 
-        \App\Services\DemandRegionMatcher::notifyAgents($demand);
-
-        $matchingAgents = \App\Services\DemandRegionMatcher::findMatchingAgents($demand);
-        $agentIds = $matchingAgents->pluck('id')->toArray();
-        if (!empty($agentIds)) {
-            broadcast(new \App\Events\NewDemand($demand, $agentIds));
-        }
-
-        // Portföy eşleşmesi — portföyünde uygun stok olan acentelere bildirim
-        $portfolioMatches = \App\Services\PortfolioMatcher::findMatchingAgents($demand);
-        if ($portfolioMatches->isNotEmpty()) {
-            \App\Services\PortfolioMatcher::markNotified($portfolioMatches, $demand->id);
-
-            $portfolioAgentIds = $portfolioMatches->pluck('agent.id')->unique()->toArray();
-            // Mevcut region matcher ile birleştir — tekrar SMS gitmesin
-            foreach ($portfolioMatches as $match) {
-                // WebSocket bildirimi
-                if (!in_array($match['agent']->id, $agentIds)) {
-                    broadcast(new \App\Events\NewDemand($demand, [$match['agent']->id]));
-                }
-            }
-        }
-
         return response()->json([
-            'message' => 'Talep başarıyla oluşturuldu.',
+            'message' => 'Talebiniz alındı, incelendikten sonra yayına alınacak.',
             'data'    => $demand,
         ], 201);
     }
@@ -188,8 +276,20 @@ class DemandController extends Controller
     // ─────────────────────────────────────────────────────────
     public function categories(): JsonResponse
     {
-        $categories = Category::active()
-            ->select('id', 'name', 'slug', 'icon', 'form_schema')
+        $childScope = function ($query) {
+            $query->where('is_active', true)->orderBy('sort_order');
+        };
+
+        $categories = Category::query()
+            ->where('is_active', true)
+            ->whereNull('parent_id')
+            ->orderBy('sort_order')
+            ->with([
+                'children'                     => $childScope,
+                'children.children'            => $childScope,
+                'children.children.children'   => $childScope,
+                'children.children.children.children' => $childScope,
+            ])
             ->get();
 
         return response()->json($categories);

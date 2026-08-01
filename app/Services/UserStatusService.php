@@ -2,16 +2,16 @@
 
 namespace App\Services;
 
+use App\Enums\NotificationType;
 use App\Models\User;
+use App\Notifications\AppNotification;
 use App\Services\EmailService;
-use App\Services\SmsService;
 use Illuminate\Support\Facades\Log;
 
 class UserStatusService
 {
     public function __construct(
         private EmailService $email,
-        private SmsService   $sms,
     ) {}
 
     // ─────────────────────────────────────────────────────────
@@ -28,8 +28,10 @@ class UserStatusService
             'admin_note' => null,
         ]);
 
-        // SMS bildirimi
-        $this->sms->sendOtp($user->phone, 'login'); // TODO: Bildirim SMS servisi ayrılacak
+        // Eskiden burada yanlışlıkla bir "giriş OTP kodu" gönderiliyordu
+        // (sendOtp('login')) — bildirim ile doğrulama kodu birbirine
+        // karışmıştı. Artık gerçek bir "onaylandı" bildirimi gidiyor.
+        $user->notify(new AppNotification(NotificationType::AGENT_APPROVED));
         Log::info("Agent onaylandı: {$user->id} — {$user->phone}");
 
         // Mail bildirimi (email varsa)
@@ -51,6 +53,7 @@ class UserStatusService
             'admin_note' => $reason,
         ]);
 
+        $user->notify(new AppNotification(NotificationType::AGENT_REJECTED, ['reason' => $reason]));
         Log::info("Agent reddedildi: {$user->id} — Sebep: {$reason}");
 
         if ($user->email) {

@@ -24,18 +24,21 @@ class SubscriptionController extends Controller
     }
 
     // ─────────────────────────────────────────────────────────
-    // Tüm planları listele
+    // Tüm planları listele (billable_products tablosundan, admin
+    // panelden Ödeme & Abonelik → Ödenebilir Ürünler'den yönetilir)
     // GET /api/subscription/plans
     // Auth: Yok (herkes görebilir)
     // ─────────────────────────────────────────────────────────
     public function plans(): JsonResponse
     {
-        $plans = collect(SubscriptionService::PLANS)
-            ->map(fn($plan, $key) => [
-                'id'          => $key,
-                'label'       => $plan['label'],
-                'price'       => $plan['price'],
-                'offer_limit' => $plan['offer_limit'] === 0 ? 'Sınırsız' : $plan['offer_limit'],
+        $plans = $this->subscription->getActivePlans()
+            ->map(fn ($plan) => [
+                'code'            => $plan->code,
+                'name'            => $plan->name,
+                'price'           => $plan->price,
+                'offer_quota'     => $plan->offer_quota === null ? 'Sınırsız' : $plan->offer_quota,
+                'portfolio_limit' => $plan->unlimited_portfolio ? 'Sınırsız' : $plan->portfolio_limit_override,
+                'duration_days'   => $plan->duration_days,
             ])
             ->values();
 
@@ -43,36 +46,13 @@ class SubscriptionController extends Controller
     }
 
     // ─────────────────────────────────────────────────────────
-    // Plan yükselt / aktif et
-    // POST /api/subscription/activate
-    // Auth: auth-token + agent.approved
-    // Body: { plan: 'basic'|'premium'|'pro', months: 1 }
+    // Abonelik satın alma artık PaymentController::checkout() üzerinden
+    // yapılıyor (POST /api/subscription/checkout) — orada bir Payment
+    // kaydı açılıp PayTR iframe token'ı dönülüyor. Abonelik, kullanıcı
+    // ödemeyi PayTR'da tamamladıktan sonra callback ile aktif ediliyor,
+    // burada doğrudan "aktif et" YOK (ödeme almadan aktif etmek admin
+    // panelinin işi — AdminController::setSubscription).
     // ─────────────────────────────────────────────────────────
-    public function activate(Request $request): JsonResponse
-    {
-        $request->validate([
-            'plan'   => 'required|in:basic,premium,pro',
-            'months' => 'nullable|integer|min:1|max:12',
-        ], [
-            'plan.in' => 'Geçerli plan seçin: basic, premium veya pro.',
-        ]);
-
-        $user = $request->user();
-
-        // TODO: Ödeme entegrasyonu burada çağrılacak
-        // PaymentService::charge($user, $plan, $months);
-
-        $this->subscription->activate(
-            $user,
-            $request->plan,
-            $request->months ?? 1
-        );
-
-        return response()->json([
-            'message'      => 'Aboneliğiniz aktif edildi.',
-            'subscription' => $this->subscription->summary($user->fresh()),
-        ]);
-    }
 
     // ─────────────────────────────────────────────────────────
     // Aboneliği iptal et

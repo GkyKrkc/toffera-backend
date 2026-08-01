@@ -4,7 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
-use App\Services\SmsService;
+use App\Services\OtpService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -12,7 +12,7 @@ use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
 {
-    public function __construct(private SmsService $sms) {}
+    public function __construct(private OtpService $sms) {}
 
     // ─────────────────────────────────────────────────────────
     // SMS İLE GİRİŞ — ADIM 1
@@ -50,7 +50,8 @@ class AuthController extends Controller
         $this->sms->sendOtp($user->phone, 'login');
 
         return response()->json([
-            'message' => 'Giriş kodu gönderildi.',
+            'message'   => 'Giriş kodu gönderildi.',
+            'debug_otp' => $this->sms->debugCode($user->phone, 'login'),
         ]);
     }
 
@@ -176,11 +177,6 @@ class AuthController extends Controller
 
         return response()->json([
             'user' => array_merge($this->userResponse($user), [
-                'offer_limit'             => $user->offer_limit,
-                'remaining_offers'        => $user->remainingOffers(),
-                'subscription_plan'       => $user->subscription_plan,
-                'subscription_ends_at'    => $user->subscription_ends_at?->toDateString(),
-                'has_active_subscription' => $user->hasActiveSubscription(),
                 'agent_documents'         => $user->agentDocuments->map(fn($d) => [
                     'type'          => $d->document_type,
                     'type_label'    => $d->type_label,
@@ -235,6 +231,21 @@ class AuthController extends Controller
             'company_name' => $user->company_name,
             'roles'        => $user->getRoleNames(),
             'permissions'  => $user->getAllPermissions()->pluck('name'),
+            // Header/hesap menüsündeki rol etiketi ("Vasıta Uzmanı", "Gayrimenkul
+            // Uzmanı" vb.) bu alandan besleniyor — eskiden bu response'ta hiç
+            // dönmüyordu, frontend'in account_type_group?.name fallback'i her
+            // zaman boş kalıp jenerik "Uzman" yazıyordu.
+            'account_type_group' => $user->accountTypeGroup ? [
+                'id'   => $user->accountTypeGroup->id,
+                'name' => $user->accountTypeGroup->name,
+                'kind' => $user->accountTypeGroup->kind,
+                'slug' => $user->accountTypeGroup->slug,
+            ] : null,
+            ...$user->entitlementSummary(), // credit_balance + active_subscription — login/register/me hep tutarlı
+            // Zorunlu yasal metinlerden onaylanmamış/güncel olmayan varsa —
+            // frontend bunu görünce bloklayıcı bir onay ekranı gösterir
+            // (bkz. LegalReconsentGate.jsx, User::pendingConsents()).
+            'pending_consents' => $user->pendingConsents(),
         ];
     }
 }

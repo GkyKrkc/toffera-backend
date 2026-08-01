@@ -4,7 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
-use App\Services\SmsService;
+use App\Services\OtpService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -12,7 +12,7 @@ use Illuminate\Validation\ValidationException;
 
 class PasswordResetController extends Controller
 {
-    public function __construct(private SmsService $sms) {}
+    public function __construct(private OtpService $sms) {}
 
     // ─────────────────────────────────────────────────────────
     // ADIM 1 — Sıfırlama kodu gönder
@@ -45,7 +45,8 @@ class PasswordResetController extends Controller
         $this->sms->sendOtp($user->phone, 'password_reset');
 
         return response()->json([
-            'message' => 'Şifre sıfırlama kodu gönderildi.',
+            'message'   => 'Şifre sıfırlama kodu gönderildi.',
+            'debug_otp' => $this->sms->debugCode($user->phone, 'password_reset'),
         ]);
     }
 

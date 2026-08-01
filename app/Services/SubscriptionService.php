@@ -2,142 +2,133 @@
 
 namespace App\Services;
 
+use App\Models\BillableProduct;
+use App\Models\Payment;
+use App\Models\Subscription;
 use App\Models\User;
-use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 
+/**
+ * NOT (2026-07, PayTR entegrasyonu sırasında yeniden yazıldı):
+ *
+ * Bu servis daha önce `users` tablosundaki eski/legacy `subscription_plan`,
+ * `subscription_started_at`, `subscription_ends_at`, `offer_limit`
+ * kolonlarını okuyup yazıyordu ve sabit bir PLANS dizisi kullanıyordu.
+ * Ancak gerçek yetkilendirme motoru (User::activeSubscription(),
+ * canOfferInCategory(), portfolioLimitFor()) çoktan `subscriptions` +
+ * `billable_products` tablolarını kullanan yeni sisteme geçmişti — eski
+ * servis artık HİÇBİR gerçek davranışı etkilemiyordu. Üstelik summary()
+ * metodu var olmayan User::remainingOffers()'ı çağırdığı için
+ * GET /api/subscription her zaman fatal hata veriyordu.
+ *
+ * Şimdi bu servis gerçek sisteme (Subscription/BillableProduct/Payment)
+ * bağlandı; ödeme (Payment) başarılı olduğunda activateFromPayment(),
+ * admin panelden ücretsiz tanımlama için grantByAdmin() kullanılır.
+ */
 class SubscriptionService
 {
-    // ── Plan tanımları ────────────────────────────────────────
-    public const PLANS = [
-        'free' => [
-            'label'       => 'Ücretsiz',
-            'offer_limit' => 3,       // Ayda 3 teklif
-            'price'       => 0,
-        ],
-        'basic' => [
-            'label'       => 'Temel',
-            'offer_limit' => 20,      // Ayda 20 teklif
-            'price'       => 299,     // TL
-        ],
-        'premium' => [
-            'label'       => 'Premium',
-            'offer_limit' => 50,      // Ayda 50 teklif
-            'price'       => 599,
-        ],
-        'pro' => [
-            'label'       => 'Pro',
-            'offer_limit' => 0,       // Sınırsız (0 = sınırsız)
-            'price'       => 999,
-        ],
-    ];
-
-    // ── Plan bilgisi ─────────────────────────────────────────
-
-    public function getPlan(string $plan): array
+    /** Satın alınabilir tüm aktif abonelik ürünleri. */
+    public function getActivePlans()
     {
-        return self::PLANS[$plan] ?? self::PLANS['free'];
+        return BillableProduct::query()
+            ->where('type', 'subscription')
+            ->where('is_active', true)
+            ->orderBy('price')
+            ->get();
     }
 
-    public function getAllPlans(): array
+    public function findPlan(string $code): ?BillableProduct
     {
-        return self::PLANS;
+        return BillableProduct::query()
+            ->where('type', 'subscription')
+            ->where('code', $code)
+            ->first();
     }
 
-    // ── Abonelik aktif etme / yükseltme ──────────────────────
-
-    public function activate(User $user, string $plan, int $months = 1): void
+    /**
+     * Başarılı bir ödemeden sonra gerçek Subscription kaydını oluşturur.
+     */
+    public function activateFromPayment(Payment $payment): Subscription
     {
-        if (!array_key_exists($plan, self::PLANS)) {
-            throw new \InvalidArgumentException("Geçersiz plan: {$plan}");
+        $product = $payment->billableProduct;
+        $user    = $payment->user;
+
+        if (!$product) {
+            throw new \RuntimeException("Payment #{$payment->id} bir BillableProduct'a bağlı değil.");
         }
 
-        $planConfig = self::PLANS[$plan];
-
-        // Mevcut abonelik devam ediyorsa üzerine ekle, yoksa bugünden başlat
-        $startDate = $user->hasActiveSubscription()
-            ? $user->subscription_ends_at
-            : now();
-
-        $user->update([
-            'subscription_plan'       => $plan,
-            'subscription_started_at' => now(),
-            'subscription_ends_at'    => Carbon::parse($startDate)->addMonths($months),
-            'offer_limit'             => $planConfig['offer_limit'],
-        ]);
+        return $this->grant($user, $product, $payment);
     }
 
-    // ── Abonelik iptal etme ───────────────────────────────────
+    /**
+     * Admin panelden ödeme almadan direkt abonelik tanımlama
+     * (AdminController::setSubscription).
+     */
+    public function grantByAdmin(User $user, BillableProduct $product): Subscription
+    {
+        return $this->grant($user, $product, null);
+    }
 
+    private function grant(User $user, BillableProduct $product, ?Payment $payment): Subscription
+    {
+        return DB::transaction(function () use ($user, $product, $payment) {
+            // Önceki aktif abonelik(ler) varsa iptal et — aynı anda birden
+            // fazla aktif abonelik olmasın.
+            $user->subscriptions()
+                ->where('status', 'active')
+                ->update(['status' => 'cancelled']);
+
+            $durationDays = $product->duration_days ?? 30;
+
+            return Subscription::create([
+                'user_id'                 => $user->id,
+                'billable_product_id'     => $product->id,
+                'status'                  => 'active',
+                'starts_at'               => now(),
+                'ends_at'                 => now()->addDays($durationDays),
+                'auto_renew'              => false,
+                'offers_used_this_period' => 0,
+                'period_resets_at'        => now()->addDays($durationDays),
+                'payment_id'              => $payment?->id,
+            ]);
+        });
+    }
+
+    /**
+     * Kullanıcının aktif aboneliğini iptal eder. Kalan süre boyunca
+     * haklar geçerli kalsın istenirse ends_at dokunulmaz; burada
+     * "hemen kes" davranışı seçildi (eski servisle aynı davranış).
+     */
     public function cancel(User $user): void
     {
-        // Süre dolunca otomatik free'ye düşsün diye ends_at olduğu gibi kalır
-        // Manuel olarak free'ye almak istenirse downgrade kullanılır
-        $user->update([
-            'subscription_ends_at' => now(), // Hemen sonlandır
-        ]);
-    }
+        $subscription = $user->activeSubscription();
 
-    // ── Plan düşürme (downgrade) ──────────────────────────────
-
-    public function downgradeToFree(User $user): void
-    {
-        $user->update([
-            'subscription_plan'       => 'free',
-            'subscription_started_at' => null,
-            'subscription_ends_at'    => null,
-            'offer_limit'             => self::PLANS['free']['offer_limit'],
-        ]);
-    }
-
-    // ── Süresi dolmuş abonelikleri kontrol et ─────────────────
-    // Bu metot bir scheduled command ile çağrılır (Modül 12'de)
-
-    public function expireIfNeeded(User $user): bool
-    {
-        if (
-            $user->subscription_plan !== 'free' &&
-            $user->subscription_ends_at &&
-            $user->subscription_ends_at->isPast()
-        ) {
-            $this->downgradeToFree($user);
-            return true;
+        if ($subscription) {
+            $subscription->update(['auto_renew' => false, 'status' => 'cancelled', 'ends_at' => now()]);
         }
-
-        return false;
     }
 
-    // ── Durum özeti ───────────────────────────────────────────
-
+    /**
+     * GET /api/subscription ve admin kullanıcı detayı için tek, tutarlı
+     * özet. User::entitlementSummary() (doğru/güncel kaynak) üzerine plan
+     * fiyat/tarih bilgisini ekler.
+     */
     public function summary(User $user): array
     {
-        $plan = $this->getPlan($user->subscription_plan);
+        $entitlements = $user->entitlementSummary();
+        $subscription = $user->activeSubscription();
+        $product      = $subscription?->billableProduct;
 
         return [
-            'plan'              => $user->subscription_plan,
-            'plan_label'        => $plan['label'],
-            'price'             => $plan['price'],
-            'is_active'         => $user->hasActiveSubscription(),
-            'started_at'        => $user->subscription_started_at?->format('d.m.Y'),
-            'ends_at'           => $user->subscription_ends_at?->format('d.m.Y'),
-            'days_remaining'    => $user->subscription_ends_at?->isPast()
-                ? 0
-                : (int) now()->diffInDays($user->subscription_ends_at),
-            'offer_limit'       => $user->offer_limit,
-            'offers_used'       => $this->offersUsedThisMonth($user),
-            'offers_remaining'  => $user->remainingOffers(),
+            ...$entitlements,
+            'plan_code'      => $product->code ?? null,
+            'plan_price'     => $product->price ?? null,
+            'starts_at'      => $subscription?->starts_at?->format('d.m.Y'),
+            'ends_at'        => $subscription?->ends_at?->format('d.m.Y'),
+            'days_remaining' => ($subscription?->ends_at && $subscription->ends_at->isFuture())
+                ? (int) now()->diffInDays($subscription->ends_at)
+                : 0,
+            'auto_renew'     => $subscription?->auto_renew ?? false,
         ];
-    }
-
-    // ── Bu ay kullanılan teklif sayısı ────────────────────────
-
-    public function offersUsedThisMonth(User $user): int
-    {
-        // Offer modeli Modül 10+'da gelecek, şimdilik 0 dön
-        if (!class_exists(\App\Models\Offer::class)) return 0;
-
-        return \App\Models\Offer::where('user_id', $user->id)
-            ->whereMonth('created_at', now()->month)
-            ->whereYear('created_at', now()->year)
-            ->count();
     }
 }

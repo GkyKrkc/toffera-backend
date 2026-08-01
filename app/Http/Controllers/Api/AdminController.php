@@ -144,18 +144,26 @@ class AdminController extends Controller
     // ─────────────────────────────────────────────────────────
     // Admin abonelik düzenleme (ödeme almadan direkt aktif et)
     // POST /api/admin/users/{user}/subscription
+    // Body: { plan_code: 'free' | 'basic_monthly' | 'premium_monthly' | 'pro_monthly' }
+    // 'free' gönderilirse mevcut aktif abonelik iptal edilir (ücretsiz
+    // seviyede satın alınabilir bir ürün yoktur, bkz. BillableProductSeeder).
     // ─────────────────────────────────────────────────────────
     public function setSubscription(Request $request, User $user): JsonResponse
     {
         $request->validate([
-            'plan'   => 'required|in:free,basic,premium,pro',
-            'months' => 'nullable|integer|min:1|max:24',
+            'plan_code' => 'required|string',
         ]);
 
-        if ($request->plan === 'free') {
-            $this->subscriptionService->downgradeToFree($user);
+        if ($request->plan_code === 'free') {
+            $this->subscriptionService->cancel($user);
         } else {
-            $this->subscriptionService->activate($user, $request->plan, $request->months ?? 1);
+            $product = $this->subscriptionService->findPlan($request->plan_code);
+
+            if (!$product) {
+                return response()->json(['message' => 'Geçersiz plan kodu.'], 422);
+            }
+
+            $this->subscriptionService->grantByAdmin($user, $product);
         }
 
         return response()->json([

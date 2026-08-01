@@ -12,6 +12,8 @@ class DatabaseSeeder extends Seeder
         $this->call([
             RolesAndPermissionsSeeder::class,
             CategorySeeder::class,
+            AccountTypeGroupSeeder::class,
+            BillableProductSeeder::class,
         ]);
 
         // Admin kullanıcısı — factory yerine direkt oluştur

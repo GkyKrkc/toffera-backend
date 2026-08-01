@@ -3,7 +3,7 @@
 namespace App\Events;
 
 use App\Models\Demand;
-use Illuminate\Broadcasting\Channel;
+use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Broadcasting\InteractsWithSockets;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 use Illuminate\Foundation\Events\Dispatchable;
@@ -20,9 +20,16 @@ class NewDemand implements ShouldBroadcastNow
 
     public function broadcastOn(): array
     {
-        // Her eşleşen agent'ın kanalına
+        // ÖNCEDEN: her agentId için AYNI genel 'agents' kanalını tekrar
+        // tekrar diziye ekliyordu — N eşleşen agent varsa event N kere
+        // aynı genel kanala yayınlanıyordu, o kanalı dinleyen HERKES
+        // (eşleşmemiş agent'lar dahil) N adet aynı bildirimi alıyordu.
+        //
+        // ŞİMDİ: her eşleşen agent'ın GERÇEKTEN kendi özel kanalına
+        // (user.{id}) ayrı ayrı yayınlanıyor — sadece o agent duyar,
+        // event tek sefer gerçek anlamda "N farklı kanala" gider.
         return array_map(
-            fn($id) => new Channel('agents'),
+            fn($id) => new PrivateChannel('user.' . $id),
             $this->agentIds
         );
     }

@@ -20,7 +20,12 @@ class Demand extends Model
         'features',
         'expires_at',
         'duration_hours',
+        'min_match_percent',
         'status',
+        'moderation_status',
+        'moderated_by',
+        'moderated_at',
+        'moderation_note',
     ];
 
     protected function casts(): array
@@ -31,6 +36,7 @@ class Demand extends Model
             'max_budget'     => 'decimal:2',
             'expires_at'     => 'datetime',
             'duration_hours' => 'integer',
+            'moderated_at' => 'datetime',
         ];
     }
 
@@ -112,6 +118,12 @@ class Demand extends Model
     public function isPending(): bool
     {
         return $this->status === 'pending';
+    }
+
+    /** Bir teklif kabul edildi ama satış henüz onaylanmadı (ön anlaşma). */
+    public function isMatched(): bool
+    {
+        return $this->status === 'matched';
     }
 
     public function isOwnedBy(User $user): bool
